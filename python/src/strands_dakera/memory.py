@@ -199,7 +199,9 @@ class DakeraServiceClient:
 
     def search_memories(self, agent_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         """Decay-weighted semantic recall for an agent."""
-        response = self.client.recall(agent_id=agent_id, query=query, top_k=top_k)
+        # `recall` returns a RecallResponse (with `.memories`); we defensively also
+        # accept a raw iterable, so treat the result as untyped for duck-typing.
+        response: Any = self.client.recall(agent_id=agent_id, query=query, top_k=top_k)
         memories = getattr(response, "memories", response)
         return [_memory_to_dict(m) for m in memories]
 
