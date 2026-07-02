@@ -20,6 +20,10 @@ jobs:
       should_publish: ${{ steps.check.outputs.should_publish }}
     steps:
       - id: check
+        # This job does not check out the repo, so the workflow-level
+        # `working-directory: python` default would point at a missing dir.
+        # Run in the workspace root instead — it only needs the tag name.
+        working-directory: ${{ github.workspace }}
         env:
           TAG_NAME: ${{ github.event.release.tag_name }}
         run: |
