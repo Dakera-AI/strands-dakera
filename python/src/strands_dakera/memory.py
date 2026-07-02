@@ -165,17 +165,19 @@ class DakeraServiceClient:
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Store a memory for an agent."""
-        return self.client.store_memory(
+        result: dict[str, Any] = self.client.store_memory(
             agent_id=agent_id,
             content=content,
             memory_type=memory_type,
             importance=importance,
             metadata=metadata,
         )
+        return result
 
     def get_memory(self, agent_id: str, memory_id: str) -> dict[str, Any]:
         """Get a memory by ID."""
-        return self.client.get_memory(agent_id, memory_id)
+        result: dict[str, Any] = self.client.get_memory(agent_id, memory_id)
+        return result
 
     def update_memory(
         self,
@@ -186,13 +188,14 @@ class DakeraServiceClient:
         memory_type: str | None = None,
     ) -> dict[str, Any]:
         """Update an existing memory."""
-        return self.client.update_memory(
+        result: dict[str, Any] = self.client.update_memory(
             agent_id=agent_id,
             memory_id=memory_id,
             content=content,
             metadata=metadata,
             memory_type=memory_type,
         )
+        return result
 
     def search_memories(self, agent_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         """Decay-weighted semantic recall for an agent."""
@@ -202,7 +205,8 @@ class DakeraServiceClient:
 
     def delete_memory(self, agent_id: str, memory_id: str) -> dict[str, Any]:
         """Delete a memory by ID."""
-        return self.client.forget(agent_id, memory_id)
+        result: dict[str, Any] = self.client.forget(agent_id, memory_id)
+        return result
 
 
 def _memory_to_dict(memory: Any) -> dict[str, Any]:
