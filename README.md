@@ -82,6 +82,44 @@ Mutative actions (`store`, `update`, `delete`) prompt for confirmation unless `B
 
 See [`docs/dakera_memory_tool.md`](docs/dakera_memory_tool.md) for the full action reference.
 
+## Memory store
+
+`DakeraMemoryStore` is a Strands [`MemoryStore`](https://strandsagents.com/) — a
+`MemoryManager` extension point (Strands ≥ 1.45). Where the `dakera_memory` tool is
+called explicitly by the model, a store plugs into the **agent loop** directly: the
+manager searches it to recall context (injected into the prompt automatically) and,
+when writable, writes new memories — either directly or via periodic **extraction**
+from the conversation. Both share one Dakera server and agent namespace.
+
+```python
+from strands import Agent
+from strands.memory import MemoryManager
+from strands_dakera import DakeraMemoryStore
+
+# Recall + write, distilling facts from the conversation every few turns.
+store = DakeraMemoryStore(agent_id="alex", writable=True, extraction=True)
+agent = Agent(memory_manager=MemoryManager(stores=[store]))
+
+# The agent now recalls from and writes to Dakera without any explicit tool call.
+agent("Remember that I prefer dark-mode dashboards.")
+agent("How do I like my dashboards?")  # recalls the stored preference
+```
+
+`DakeraMemoryStore` implements `search` (decay-weighted recall) and `add` (a client-side
+write sink), so enabling `extraction` uses the manager's client-side `ModelExtractor` to
+distill facts before storing them.
+
+| Argument | Default | Description |
+|---|---|---|
+| `agent_id` | _(required)_ | Dakera agent namespace that owns the memories |
+| `name` | `"dakera"` | Store identifier, used to target it from memory tools |
+| `writable` | `True` | Whether the manager may write to the store |
+| `extraction` | `None` | Automatic extraction (`bool` or `ExtractionConfig`) |
+| `max_search_results` | `None` | Default result cap per search (falls back to 5) |
+| `importance` | `None` | Default importance (0.0–1.0) applied to writes |
+| `memory_type` | `"episodic"` | Default Dakera memory type for writes |
+| `base_url` / `api_key` | env | Override `DAKERA_BASE_URL` / `DAKERA_API_KEY` |
+
 ## Development
 
 The package lives under [`python/`](python/) (monorepo-style layout matching the

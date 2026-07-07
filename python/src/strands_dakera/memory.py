@@ -139,10 +139,13 @@ TOOL_SPEC = {
 class DakeraServiceClient:
     """Thin wrapper around the Dakera Python SDK for the memory tool."""
 
-    def __init__(self) -> None:
-        """Initialize the Dakera client from environment configuration.
+    def __init__(self, base_url: str | None = None, api_key: str | None = None) -> None:
+        """Initialize the Dakera client.
 
-        Reads DAKERA_BASE_URL (default http://localhost:3000) and DAKERA_API_KEY.
+        Args:
+            base_url: Dakera server URL. Falls back to ``$DAKERA_BASE_URL``,
+                then ``http://localhost:3000``.
+            api_key: Dakera API key. Falls back to ``$DAKERA_API_KEY``.
         """
         try:
             from dakera import DakeraClient
@@ -152,8 +155,8 @@ class DakeraServiceClient:
                 "Install it with: pip install 'strands-dakera'"
             ) from err
 
-        base_url = os.environ.get("DAKERA_BASE_URL", "http://localhost:3000")
-        api_key = os.environ.get("DAKERA_API_KEY")
+        base_url = base_url or os.environ.get("DAKERA_BASE_URL", "http://localhost:3000")
+        api_key = api_key or os.environ.get("DAKERA_API_KEY")
         self.client = DakeraClient(base_url=base_url, api_key=api_key)
 
     def store_memory(
