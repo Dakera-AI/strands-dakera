@@ -29,7 +29,7 @@ surface first.
 pip install strands-dakera
 ```
 
-Compatible with Dakera server v0.12.0 and v0.11.108 (dakera Python SDK >= 0.13.0).
+Compatible with Dakera server v0.12.0 and v0.11.108 (dakera Python SDK >= 0.13.1).
 
 Run a Dakera server (once):
 

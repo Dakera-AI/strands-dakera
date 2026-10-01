@@ -9,10 +9,11 @@ Dakera server **v0.12.0** support. Compatible with Dakera server v0.12.0 and v0.
 
 ### Changed
 
-- Requires `dakera>=0.13.0` (the Python SDK release for server v0.12.0; it also works
+- Requires `dakera>=0.13.1` (the Python SDK release for server v0.12.0; it also works
   with v0.11.108). The SDK calls this package makes (`store_memory`, `get_memory`,
-  `update_memory`, `recall`, `forget`) keep their signatures in 0.13.0, so no API change
-  here. SDK errors are now typed (`ServiceUnavailableError`, `PayloadTooLargeError`,
+  `update_memory`, `recall`, `forget`) keep their signatures, so no API change here.
+  0.13.1 is the minimum because `update_memory()` in dakera 0.13.0 sent no `agent_id`,
+  which the server requires, so every update through `DakeraServiceClient` failed with a 400. SDK errors are now typed (`ServiceUnavailableError`, `PayloadTooLargeError`,
   `FeatureNotAvailableError`, `ConflictError`, all `DakeraError`s); the `dakera_memory`
   tool still reports them as an error result.
 - `__version__` is `0.3.0`.
