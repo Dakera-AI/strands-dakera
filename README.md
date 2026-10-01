@@ -29,6 +29,8 @@ surface first.
 pip install strands-dakera
 ```
 
+Compatible with Dakera server v0.12.0 and v0.11.108 (dakera Python SDK >= 0.13.1).
+
 Run a Dakera server (once):
 
 ```bash
@@ -130,6 +132,7 @@ cd python
 pip install hatch
 hatch run test        # pytest (no live server required — mocked client)
 hatch run prepare     # format + lint + typecheck + test
+DAKERA_TEST_URL=http://localhost:3000 hatch run test tests/test_integration.py  # live tests against a real server (e.g. ghcr.io/dakera-ai/dakera:0.12.0)
 ```
 
 ## Roadmap

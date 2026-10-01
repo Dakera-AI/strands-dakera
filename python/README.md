@@ -9,6 +9,8 @@ See the [repository README](../README.md) for full usage. Quick start:
 pip install strands-dakera
 ```
 
+Compatible with Dakera server v0.12.0 and v0.11.108 (dakera Python SDK >= 0.13.1).
+
 As an explicit tool:
 
 ```python
@@ -37,6 +39,7 @@ hatch run test        # run the test suite (mocked client, no live server)
 hatch run lint        # ruff
 hatch run typecheck   # mypy
 hatch run prepare     # format + lint + typecheck + test
+DAKERA_TEST_URL=http://localhost:3000 hatch run test tests/test_integration.py  # live tests against a real server (e.g. ghcr.io/dakera-ai/dakera:0.12.0)
 ```
 
 ## Release
