@@ -1,6 +1,6 @@
 # Dakera Memory Tool
 
-The `dakera_memory` tool provides persistent, decay-weighted agent memory for Strands agents, backed by a self-hosted [Dakera](https://github.com/dakera-ai/dakera) memory server.
+The `dakera_memory` tool provides persistent, decay-weighted agent memory for Strands agents, backed by a self-hosted [Dakera](https://dakera.ai) memory server.
 
 Unlike key-value stores, Dakera ranks recalled memories by **importance**, **recency**, and **semantic relevance**, so the most useful context surfaces first.
 
