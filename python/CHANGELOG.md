@@ -17,6 +17,11 @@ Dakera server **v0.12.3** support. Compatible with Dakera server v0.12.0 – v0.
 - `__version__` is `0.4.0`.
 
 ### Fixed
+- `retrieve` (tool) and `DakeraMemoryStore.search()` on a server before v0.12.3: the first
+  recall of a new agent failed (the tool returned an `"error"` result) with `404
+  NAMESPACE_NOT_FOUND`. Such a server answers a recall of an agent that has stored nothing with
+  a 404 for some queries (e.g. "What do I build?"); it is now treated as no memories, like a
+  v0.12.3 server. Other errors are still raised.
 
 - `Agent(tools=[dakera_memory])` did not register the tool: `dakera_memory` was a plain
   function, which Strands rejects ("unrecognized tool specification"), so the agent had no

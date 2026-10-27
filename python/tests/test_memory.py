@@ -7,7 +7,7 @@ import os
 from unittest.mock import MagicMock, create_autospec, patch
 
 import pytest
-from dakera import DakeraClient, RecalledMemory, RecallResponse
+from dakera import DakeraClient, ErrorCode, NotFoundError, RecalledMemory, RecallResponse
 from strands import Agent
 from strands.models.model import Model
 from strands.types.tools import AgentTool, ToolUse
@@ -480,3 +480,18 @@ def test_agent_registers_and_calls_the_tool():
     assert result["status"] == "success"
     assert json.loads(result["content"][0]["text"])[0]["id"] == "mem-1"
     instance.search_memories.assert_called_once_with(agent_id="alex", query="ui preferences", top_k=3)
+
+
+def test_recall_of_agent_without_memories_on_an_older_server_is_empty():
+    # A server before v0.12.3 answers 404 NAMESPACE_NOT_FOUND for an agent that has
+    # stored nothing yet (for some queries); the tool and the store get no memories.
+    client, sdk = make_service_client()
+    sdk.recall.side_effect = NotFoundError("Namespace not found", status_code=404, code=ErrorCode.NAMESPACE_NOT_FOUND)
+    assert client.search_memories("agent-1", "What do I build?", top_k=3) == []
+
+
+def test_recall_raises_other_not_found_errors():
+    client, sdk = make_service_client()
+    sdk.recall.side_effect = NotFoundError("gone", status_code=404)
+    with pytest.raises(NotFoundError):
+        client.search_memories("agent-1", "What do I build?", top_k=3)

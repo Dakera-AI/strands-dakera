@@ -232,15 +232,27 @@ class DakeraServiceClient:
         items. The recall asks for that context separately and returns only the
         ranked results; an older server ignores the request and appends the
         context unmarked, so the list is also cut at ``top_k``.
+
+        An agent that has stored nothing recalls nothing: a server before v0.12.3
+        answers such a recall with ``404 NAMESPACE_NOT_FOUND`` for some queries (the
+        agent's namespace is created by its first stored memory), which is returned
+        as an empty list like a v0.12.3 server's answer. Other errors are raised.
         """
+        from dakera import ErrorCode, NotFoundError
+
         # `recall` returns a RecallResponse (with `.ranked` / `.memories`); we
         # defensively also accept a raw iterable, so treat the result as untyped.
-        response: Any = self.client.recall(
-            agent_id=agent_id,
-            query=query,
-            top_k=top_k,
-            neighborhood_mode="separate",
-        )
+        try:
+            response: Any = self.client.recall(
+                agent_id=agent_id,
+                query=query,
+                top_k=top_k,
+                neighborhood_mode="separate",
+            )
+        except NotFoundError as err:
+            if err.code != ErrorCode.NAMESPACE_NOT_FOUND:
+                raise
+            return []
         memories = getattr(response, "ranked", None)
         if memories is None:
             memories = getattr(response, "memories", response)

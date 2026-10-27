@@ -278,9 +278,10 @@ DAKERA_BASE_URL=http://localhost:3000 DAKERA_API_KEY=dk-mykey BYPASS_TOOL_CONSEN
 - **The second conversation recalls nothing with `extraction=True`** — the Strands default
   extracts every 5 invocations; use `ExtractionConfig(trigger=InvocationTrigger())` to extract
   after each one, or write with `await store.add(...)`.
-- **A 404 `NAMESPACE_NOT_FOUND` from a server before v0.12.3** — such a server can answer a
-  recall for an agent that has stored nothing with 404 (v0.12.3 answers an empty list); the
-  tool returns it as an `"error"` result. Store a memory first, or upgrade the server.
+- **Nothing recalled for a new agent** — an agent that has stored nothing recalls nothing. A
+  server before v0.12.3 answers such a recall with 404 `NAMESPACE_NOT_FOUND` for some queries
+  (v0.12.3 answers an empty list); the tool's `retrieve` and `DakeraMemoryStore.search()`
+  treat it as no memories, so a new agent starts the same way on every v0.12 server.
 - **Fewer results than expected, or `event_time` has no effect** — recall returns at most
   `top_k` ranked memories (a v0.12.3 server's session-neighbourhood context is left out), and
   `event_time` needs server v0.12.3. `GET /health` reports the server version.

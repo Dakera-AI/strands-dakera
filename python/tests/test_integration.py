@@ -71,8 +71,12 @@ async def test_memory_store_add_and_search(client, agent_id):
 
 
 def test_search_of_empty_agent_returns_nothing(client, agent_id):
-    """v0.12.3 answers a recall of an agent that stored nothing with no memories (was a 404)."""
-    assert client.search_memories(agent_id, "anything at all", top_k=3) == []
+    """An agent that stored nothing recalls nothing on every v0.12 server.
+
+    "What do I build?" is a query a server before v0.12.3 answers with
+    404 NAMESPACE_NOT_FOUND for such an agent.
+    """
+    assert client.search_memories(agent_id, "What do I build?", top_k=3) == []
 
 
 def test_search_returns_at_most_top_k_with_session_neighbourhood(client, agent_id):
