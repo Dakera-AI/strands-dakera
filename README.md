@@ -29,7 +29,7 @@ surface first.
 pip install strands-dakera
 ```
 
-Compatible with Dakera server v0.12.0 and v0.11.108 (dakera Python SDK >= 0.13.1).
+Compatible with Dakera server v0.12.3 and v0.12.0 – v0.12.2 (dakera Python SDK >= 0.14.1); `event_time` needs v0.12.3.
 
 Run a Dakera server (once):
 
@@ -74,10 +74,10 @@ agent.tool.dakera_memory(
 
 | Action | Required fields | Description |
 |---|---|---|
-| `store` | `agent_id`, `content` | Store a new memory (`importance`, `memory_type`, `metadata` optional) |
-| `retrieve` | `agent_id`, `query` | Decay-weighted semantic search (`top_k` optional, default 5) |
+| `store` | `agent_id`, `content` | Store a new memory (`importance`, `memory_type`, `metadata`, `event_time` optional) |
+| `retrieve` | `agent_id`, `query` | Decay-weighted semantic search: at most `top_k` ranked memories (default 5) |
 | `get` | `agent_id`, `memory_id` | Fetch a specific memory by ID |
-| `update` | `agent_id`, `memory_id` | Update content / metadata of an existing memory |
+| `update` | `agent_id`, `memory_id` | Update content / metadata / memory type / importance of an existing memory |
 | `delete` | `agent_id`, `memory_id` | Delete a memory by ID |
 
 Mutative actions (`store`, `update`, `delete`) prompt for confirmation unless `BYPASS_TOOL_CONSENT=true`.
@@ -132,7 +132,7 @@ cd python
 pip install hatch
 hatch run test        # pytest (no live server required — mocked client)
 hatch run prepare     # format + lint + typecheck + test
-DAKERA_TEST_URL=http://localhost:3000 hatch run test tests/test_integration.py  # live tests against a real server (e.g. ghcr.io/dakera-ai/dakera:0.12.0)
+DAKERA_TEST_URL=http://localhost:3000 hatch run test tests/test_integration.py  # live tests against a real server (e.g. ghcr.io/dakera-ai/dakera:0.12.3)
 ```
 
 ## Roadmap

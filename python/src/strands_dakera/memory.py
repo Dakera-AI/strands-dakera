@@ -118,7 +118,7 @@ TOOL_SPEC = {
                 },
                 "importance": {
                     "type": "number",
-                    "description": "Importance score 0.0-1.0 for store action",
+                    "description": "Importance score 0.0-1.0 for store/update",
                 },
                 "memory_type": {
                     "type": "string",
@@ -128,6 +128,14 @@ TOOL_SPEC = {
                 "metadata": {
                     "type": "object",
                     "description": "Optional metadata to store with the memory",
+                },
+                "event_time": {
+                    "type": "string",
+                    "description": (
+                        "For store: when the remembered event happened, if not now, as an RFC 3339 "
+                        "timestamp with offset (e.g. 2026-03-01T09:00:00Z). Recency and time filters "
+                        "use it instead of the time of storage."
+                    ),
                 },
             },
             "required": ["action", "agent_id"],
@@ -166,14 +174,24 @@ class DakeraServiceClient:
         importance: float | None = None,
         memory_type: str = "episodic",
         metadata: dict[str, Any] | None = None,
+        event_time: int | float | str | None = None,
     ) -> dict[str, Any]:
-        """Store a memory for an agent."""
+        """Store a memory for an agent.
+
+        ``event_time`` (Unix seconds or an RFC 3339 string) is when the remembered
+        event happened, for history written after the fact; a Dakera server
+        v0.12.3+ uses it for recency and time filters (older servers ignore it).
+        The result carries ``truncated`` / ``embedded_tokens`` when the content is
+        longer than the embedding model reads, and ``warnings`` naming request
+        fields the server ignored (server v0.12.3+).
+        """
         result: dict[str, Any] = self.client.store_memory(
             agent_id=agent_id,
             content=content,
             memory_type=memory_type,
             importance=importance,
             metadata=metadata,
+            event_time=event_time,
         )
         return result
 
@@ -189,24 +207,40 @@ class DakeraServiceClient:
         content: str | None = None,
         metadata: dict[str, Any] | None = None,
         memory_type: str | None = None,
+        importance: float | None = None,
     ) -> dict[str, Any]:
-        """Update an existing memory."""
+        """Update an existing memory (only the fields given are changed)."""
         result: dict[str, Any] = self.client.update_memory(
             agent_id=agent_id,
             memory_id=memory_id,
             content=content,
             metadata=metadata,
             memory_type=memory_type,
+            importance=importance,
         )
         return result
 
     def search_memories(self, agent_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]]:
-        """Decay-weighted semantic recall for an agent."""
-        # `recall` returns a RecallResponse (with `.memories`); we defensively also
-        # accept a raw iterable, so treat the result as untyped for duck-typing.
-        response: Any = self.client.recall(agent_id=agent_id, query=query, top_k=top_k)
-        memories = getattr(response, "memories", response)
-        return [_memory_to_dict(m) for m in memories]
+        """Decay-weighted semantic recall for an agent: at most ``top_k`` ranked memories.
+
+        A Dakera server v0.12.3+ appends session-neighbourhood context after the
+        ranked results by default, so ``memories`` can hold more than ``top_k``
+        items. The recall asks for that context separately and returns only the
+        ranked results; an older server ignores the request and appends the
+        context unmarked, so the list is also cut at ``top_k``.
+        """
+        # `recall` returns a RecallResponse (with `.ranked` / `.memories`); we
+        # defensively also accept a raw iterable, so treat the result as untyped.
+        response: Any = self.client.recall(
+            agent_id=agent_id,
+            query=query,
+            top_k=top_k,
+            neighborhood_mode="separate",
+        )
+        memories = getattr(response, "ranked", None)
+        if memories is None:
+            memories = getattr(response, "memories", response)
+        return [_memory_to_dict(m) for m in list(memories)[:top_k]]
 
     def delete_memory(self, agent_id: str, memory_id: str) -> dict[str, Any]:
         """Delete a memory by ID."""
@@ -236,6 +270,13 @@ def format_store_response(memory: dict[str, Any]) -> Panel:
         f"🔑 Memory ID: {memory.get('id', 'unknown')}",
         f"📊 Importance: {memory.get('importance', 'default')}",
     ]
+    if memory.get("truncated"):
+        content.append(
+            f"⚠️ Only the first {memory.get('embedded_tokens', '?')} of {memory.get('content_tokens', '?')} "
+            "tokens are searchable (content longer than the embedding model reads)"
+        )
+    for warning in memory.get("warnings") or []:
+        content.append(f"⚠️ {warning}")
     text = memory.get("content")
     if text:
         preview = text[:100] + "..." if len(text) > 100 else text
@@ -300,7 +341,7 @@ def dakera_memory(tool: ToolUse, **kwargs: Any) -> ToolResult:
 
     Args:
         tool: ToolUse object containing the input fields (action, agent_id, content,
-            memory_id, query, top_k, importance, memory_type, metadata).
+            memory_id, query, top_k, importance, memory_type, metadata, event_time).
         **kwargs: Additional keyword arguments.
 
     Returns:
@@ -350,6 +391,7 @@ def dakera_memory(tool: ToolUse, **kwargs: Any) -> ToolResult:
                 importance=tool_input.get("importance"),
                 memory_type=tool_input.get("memory_type", "episodic"),
                 metadata=tool_input.get("metadata"),
+                event_time=tool_input.get("event_time"),
             )
             console.print(format_store_response(memory))
             return ToolResult(
@@ -393,6 +435,7 @@ def dakera_memory(tool: ToolUse, **kwargs: Any) -> ToolResult:
                 content=tool_input.get("content"),
                 metadata=tool_input.get("metadata"),
                 memory_type=tool_input.get("memory_type"),
+                importance=tool_input.get("importance"),
             )
             console.print(format_get_response(memory))
             return ToolResult(

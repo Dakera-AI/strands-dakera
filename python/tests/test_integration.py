@@ -1,9 +1,9 @@
 """
-Live tests against a real Dakera server (v0.12.0 / v0.11.108).
+Live tests against a real Dakera server (v0.12.3; the round trips also pass on v0.12.0).
 
 Skipped unless ``DAKERA_TEST_URL`` is set, e.g.::
 
-    docker run -d -p 3000:3000 -e DAKERA_AUTH_ENABLED=false ghcr.io/dakera-ai/dakera:0.12.0
+    docker run -d -p 3000:3000 -e DAKERA_AUTH_ENABLED=false ghcr.io/dakera-ai/dakera:0.12.3
     DAKERA_TEST_URL=http://localhost:3000 pytest tests/test_integration.py
 
 They exercise every SDK call the tool and the store make, so a removed route or
@@ -68,3 +68,34 @@ async def test_memory_store_add_and_search(client, agent_id):
     entries = await store.search("when is the deployment window")
     assert entries
     assert any("Friday" in e.content for e in entries)
+
+
+def test_search_of_empty_agent_returns_nothing(client, agent_id):
+    """v0.12.3 answers a recall of an agent that stored nothing with no memories (was a 404)."""
+    assert client.search_memories(agent_id, "anything at all", top_k=3) == []
+
+
+def test_search_returns_at_most_top_k_with_session_neighbourhood(client, agent_id):
+    """Memories stored in one session get neighbourhood context; it must not push results past top_k."""
+    session = client.client.start_session(agent_id)
+    for i in range(6):
+        client.client.store_memory(agent_id, f"Alex tried tea variety number {i} today", session_id=session["id"])
+
+    results = client.search_memories(agent_id, "which tea did Alex try", top_k=2)
+
+    assert len(results) == 2
+    scores = [r["score"] for r in results]
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_store_event_time_and_update_importance(client, agent_id):
+    """event_time is recorded as _dakera_event_time; update_memory() changes the importance."""
+    stored = client.store_memory(agent_id, "Alex met Sam at the conference", event_time="2026-03-01T09:00:00Z")
+    memory_id = stored.get("memory_id") or stored.get("id")
+    assert memory_id
+
+    got = client.get_memory(agent_id, memory_id)
+    assert got["metadata"]["_dakera_event_time"] == 1772355600
+
+    client.update_memory(agent_id, memory_id, importance=0.95)
+    assert client.get_memory(agent_id, memory_id)["importance"] == pytest.approx(0.95)
