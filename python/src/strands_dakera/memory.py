@@ -12,21 +12,22 @@ listens on port 3000 by default. See https://github.com/dakera-ai/dakera-deploy.
 Key Features:
 ------------
 1. Memory Management:
-   - store: Add a new memory for an agent, with importance and metadata
-   - retrieve: Semantic (decay-weighted) recall across an agent's memories
+   - store: Add a new memory for an agent, with importance, type, metadata and
+     (server v0.12.3+) the time the remembered event happened
+   - retrieve: Semantic (decay-weighted) recall: at most ``top_k`` ranked memories
    - get: Fetch a specific memory by its ID
-   - update: Update the content/metadata of an existing memory
+   - update: Update the content, metadata, memory type or importance of a memory
    - delete: Remove a memory by its ID
 
-2. Safety Features:
-   - User confirmation for mutative operations (store, update, delete)
-   - Content previews before storage
-   - Warning messages before deletion
-   - BYPASS_TOOL_CONSENT mode for bypassing confirmations in tests
+2. Visibility:
+   - A preview panel before each mutative operation (store, update, delete)
+   - Warnings when stored content is longer than the embedding model reads, or
+     when the server ignored request fields
+   - BYPASS_TOOL_CONSENT=true suppresses the previews (tests, automation)
 
 3. Advanced Capabilities:
    - Decay-weighted, access-aware ranking (recall favors important, fresh memories)
-   - Importance scoring (0.0-1.0) and typed memories (episodic/semantic/procedural)
+   - Importance scoring (0.0-1.0) and typed memories (episodic/semantic/procedural/working)
    - Structured metadata storage
    - Rich output formatting
 
@@ -49,6 +50,7 @@ agent.tool.dakera_memory(
     content="Important information to remember",
     importance=0.8,
     metadata={"category": "meeting_notes"},
+    event_time="2026-03-01T09:00:00Z",  # when it happened (optional, server v0.12.3+)
 )
 
 # Retrieve memories with decay-weighted semantic search
@@ -70,12 +72,13 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-from strands.types.tools import ToolResult, ToolResultContent, ToolUse
+from strands.tools import PythonAgentTool
+from strands.types.tools import ToolResult, ToolResultContent, ToolSpec, ToolUse
 
 logger = logging.getLogger(__name__)
 console = Console()
 
-TOOL_SPEC = {
+TOOL_SPEC: ToolSpec = {
     "name": "dakera_memory",
     "description": (
         "Persistent, decay-weighted memory for agents, backed by a self-hosted Dakera server.\n\n"
@@ -83,7 +86,8 @@ TOOL_SPEC = {
         "- store: Store a new memory (requires agent_id and content)\n"
         "- retrieve: Decay-weighted semantic search (requires agent_id and query)\n"
         "- get: Get a memory by ID (requires agent_id and memory_id)\n"
-        "- update: Update a memory's content/metadata (requires agent_id and memory_id)\n"
+        "- update: Update a memory's content, metadata, memory_type or importance "
+        "(requires agent_id and memory_id)\n"
         "- delete: Delete a memory by ID (requires agent_id and memory_id)\n\n"
         "Configure the server via DAKERA_BASE_URL (default http://localhost:3000) and DAKERA_API_KEY."
     ),
@@ -336,7 +340,7 @@ def format_delete_response(memory_id: str) -> Panel:
     return Panel("\n".join(content), title="[bold green]Memory Deleted", border_style="green")
 
 
-def dakera_memory(tool: ToolUse, **kwargs: Any) -> ToolResult:
+def _dakera_memory(tool: ToolUse, **kwargs: Any) -> ToolResult:
     """Persistent decay-weighted memory management for agents, backed by Dakera.
 
     Args:
@@ -464,3 +468,23 @@ def dakera_memory(tool: ToolUse, **kwargs: Any) -> ToolResult:
             status="error",
             content=[ToolResultContent(text=f"Error: {str(e)}")],
         )
+
+
+class DakeraMemoryTool(PythonAgentTool):
+    """The ``dakera_memory`` tool: a Strands ``AgentTool`` that is also a plain callable.
+
+    Pass it to an agent (``Agent(tools=[dakera_memory])``) or call it directly with a
+    ``ToolUse`` (``dakera_memory(tool=tool_use)``), which returns the ``ToolResult``.
+    """
+
+    def __init__(self) -> None:
+        """Initialize the tool from :data:`TOOL_SPEC`."""
+        super().__init__(TOOL_SPEC["name"], TOOL_SPEC, _dakera_memory)
+
+    def __call__(self, tool: ToolUse, **kwargs: Any) -> ToolResult:
+        """Run the tool for one ``ToolUse`` (see :func:`_dakera_memory`)."""
+        return _dakera_memory(tool, **kwargs)
+
+
+dakera_memory = DakeraMemoryTool()
+"""The ``dakera_memory`` tool instance: ``Agent(tools=[dakera_memory])``."""

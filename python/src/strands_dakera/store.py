@@ -17,8 +17,9 @@ Example:
     from strands.memory import MemoryManager
     from strands_dakera import DakeraMemoryStore
 
-    # Recall + write, with automatic extraction every few turns.
-    store = DakeraMemoryStore(agent_id="alex", writable=True, extraction=True)
+    # Recall + write: facts are distilled from the conversation and stored
+    # (``extraction=True`` runs every 5 invocations, the Strands default).
+    store = DakeraMemoryStore(agent_id="alex", extraction=True)
     agent = Agent(memory_manager=MemoryManager(stores=[store]))
     ```
 
@@ -98,7 +99,9 @@ class DakeraMemoryStore(MemoryStore):
             agent_id: Dakera agent namespace that owns the memories. Required.
             name: Unique store identifier, used to target it in tools.
             description: Human-readable description, included in tool descriptions.
-            max_search_results: Default maximum results per search.
+            max_search_results: Default maximum results per search. Unset, a
+                ``MemoryManager`` uses its own default (3) and a direct
+                :meth:`search` without options returns at most 5.
             writable: Whether the store accepts writes.
             extraction: Automatic-extraction config (``bool | ExtractionConfig``).
             importance: Default importance (0.0-1.0) applied to writes.
@@ -138,7 +141,10 @@ class DakeraMemoryStore(MemoryStore):
         """Search Dakera for entries matching ``query``, ordered by relevance.
 
         Uses Dakera's decay-weighted, access-aware recall, so results favor
-        important, recently used memories.
+        important, recently used memories. At most ``max_search_results``
+        entries (from ``options``, else the store's setting, else 5), each with
+        the memory's ``id``, ``score``, ``importance``, ``memory_type``,
+        ``created_at`` and stored metadata in ``MemoryEntry.metadata``.
         """
         top_k = options.get("max_search_results") if options is not None else None
         if top_k is None:
@@ -152,9 +158,12 @@ class DakeraMemoryStore(MemoryStore):
     async def add(self, content: str, metadata: dict[str, Any] | None = None) -> Any:
         """Write a single memory to Dakera.
 
-        Extraction writes are at-least-once, so this tolerates duplicate content;
-        Dakera de-duplicates on the server. The resolved value is the stored
-        memory dict returned by the server.
+        Extraction writes are at-least-once, so the same fact can be written
+        twice. A server running autopilot dedup in ``merge`` mode folds such
+        duplicates (off by default from server v0.12.3:
+        ``DAKERA_AUTOPILOT_DEDUP_MODE=merge``). The resolved value is the stored
+        memory dict returned by the server (with ``truncated`` / ``warnings``
+        from a v0.12.3+ server, see :meth:`DakeraServiceClient.store_memory`).
         """
         return await asyncio.to_thread(
             self.client.store_memory,

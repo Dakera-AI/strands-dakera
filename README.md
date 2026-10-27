@@ -3,7 +3,7 @@
   <h3>Persistent, decay-weighted memory for Strands Agents</h3>
   <p>
     A community <a href="https://strandsagents.com/">Strands Agents</a> integration backed by a self-hosted
-    <a href="https://github.com/dakera-ai/dakera-deploy">Dakera</a> memory server.
+    <a href="https://github.com/dakera-ai/dakera">Dakera</a> memory server.
   </p>
   <p>
     <a href="https://pypi.org/project/strands-dakera/"><img src="https://img.shields.io/pypi/v/strands-dakera.svg" alt="PyPI"></a>
@@ -19,9 +19,10 @@ tool for durable memory that survives across sessions. Unlike a fixed-TTL store,
 memories by **importance × recency × semantic relevance**, so the most contextually useful memories
 surface first.
 
-- **Decay-weighted recall** — `retrieve` returns memories ranked by a decay-aware importance signal, not just vector distance.
-- **Importance-typed storage** — `store` accepts an `importance` (0.0–1.0) and a `memory_type` (episodic / semantic / procedural / working).
-- **Self-hosted, no cloud key** — runs against a local [`dakera-ai/dakera-deploy`](https://github.com/dakera-ai/dakera-deploy) docker-compose stack (server + MinIO, port 3000).
+- **Decay-weighted recall** — `retrieve` returns at most `top_k` memories ranked by a decay-aware importance signal, not just vector distance.
+- **Importance-typed storage** — `store` accepts an `importance` (0.0–1.0), a `memory_type` (episodic / semantic / procedural / working) and, for history written after the fact, the `event_time` the remembered event happened.
+- **Agent-loop memory** — `DakeraMemoryStore` plugs into a Strands `MemoryManager`: relevant memories are injected into each model call and new facts are extracted from the conversation, with no explicit tool call.
+- **Self-hosted, no cloud key** — runs against your own Dakera server (a single container, or the [`dakera-ai/dakera-deploy`](https://github.com/dakera-ai/dakera-deploy) stack).
 
 ## Install
 
@@ -29,22 +30,48 @@ surface first.
 pip install strands-dakera
 ```
 
-Compatible with Dakera server v0.12.3 and v0.12.0 – v0.12.2 (dakera Python SDK >= 0.14.1); `event_time` needs v0.12.3.
+Requires Python 3.10+ and `strands-agents` 1.45+. Compatible with Dakera server v0.12.0 – v0.12.3
+(dakera Python SDK >= 0.14.1); `event_time` needs server v0.12.3 (older servers ignore it).
 
-Run a Dakera server (once):
+### Run a Dakera server
+
+A single container is enough to try it out:
 
 ```bash
-git clone https://github.com/dakera-ai/dakera-deploy && cd dakera-deploy && docker compose up -d
+docker run -d --name dakera -p 3000:3000 \
+  -e DAKERA_ROOT_API_KEY=dk-mykey \
+  ghcr.io/dakera-ai/dakera:0.12.3
+curl http://localhost:3000/health
 ```
 
-Configure via environment variables:
+For persistent, tiered storage (Dakera + MinIO) use the Docker Compose stack in
+[`dakera-ai/dakera-deploy`](https://github.com/dakera-ai/dakera-deploy):
+
+```bash
+git clone https://github.com/dakera-ai/dakera-deploy
+cd dakera-deploy/docker
+cp .env.example .env   # set DAKERA_ROOT_API_KEY (e.g. openssl rand -hex 32) and the MinIO credentials
+docker compose up -d   # REST API on http://localhost:3000
+```
+
+### Configure
 
 | Variable | Default | Description |
 |---|---|---|
 | `DAKERA_BASE_URL` | `http://localhost:3000` | Dakera server URL |
-| `DAKERA_API_KEY` | _(unset)_ | API key for the Dakera server (`dk-...`) |
+| `DAKERA_API_KEY` | _(unset)_ | API key for the Dakera server (the root key above, or a key created with it) |
+| `BYPASS_TOOL_CONSENT` | _(unset)_ | `true` suppresses the tool's preview panels before `store` / `update` / `delete` |
+
+```bash
+export DAKERA_BASE_URL=http://localhost:3000
+export DAKERA_API_KEY=dk-mykey
+```
 
 ## Usage
+
+### The `dakera_memory` tool
+
+The model calls the tool explicitly. You can also call it yourself through `agent.tool`:
 
 ```python
 from strands import Agent
@@ -61,66 +88,98 @@ agent.tool.dakera_memory(
     metadata={"category": "preferences"},
 )
 
-# Decay-weighted semantic recall
+# Decay-weighted semantic recall: at most top_k ranked memories
 agent.tool.dakera_memory(
     action="retrieve",
     agent_id="alex",
     query="how does alex like to work?",
     top_k=5,
 )
+
+# Ask the model; it decides when to store or recall
+agent("Alex asked for a standup summary. How should I format it for them?")
 ```
 
-### Actions
+Each call returns a Strands `ToolResult` whose text is the server's JSON answer (`delete`
+answers a confirmation line). `retrieve` returns a list of memories with `id`, `content`,
+`score` (the server's ranking score, highest first), `importance`, `memory_type`,
+`metadata` and `created_at`.
 
-| Action | Required fields | Description |
-|---|---|---|
-| `store` | `agent_id`, `content` | Store a new memory (`importance`, `memory_type`, `metadata`, `event_time` optional) |
-| `retrieve` | `agent_id`, `query` | Decay-weighted semantic search: at most `top_k` ranked memories (default 5) |
-| `get` | `agent_id`, `memory_id` | Fetch a specific memory by ID |
-| `update` | `agent_id`, `memory_id` | Update content / metadata / memory type / importance of an existing memory |
-| `delete` | `agent_id`, `memory_id` | Delete a memory by ID |
+| Action | Required fields | Optional fields | Description |
+|---|---|---|---|
+| `store` | `agent_id`, `content` | `importance`, `memory_type`, `metadata`, `event_time` | Store a new memory |
+| `retrieve` | `agent_id`, `query` | `top_k` (default 5) | Decay-weighted semantic search: at most `top_k` ranked memories |
+| `get` | `agent_id`, `memory_id` | — | Fetch a specific memory by ID |
+| `update` | `agent_id`, `memory_id` | `content`, `metadata`, `memory_type`, `importance` | Update an existing memory (only the fields given) |
+| `delete` | `agent_id`, `memory_id` | — | Delete a memory by ID |
 
-Mutative actions (`store`, `update`, `delete`) prompt for confirmation unless `BYPASS_TOOL_CONSENT=true`.
+`event_time` is when the remembered event happened, as an RFC 3339 timestamp with an offset
+(e.g. `2026-03-01T09:00:00Z`); recency and time filters use it instead of the time of
+storage. The `store` result reports content longer than the embedding model reads
+(`truncated`, `embedded_tokens`) and request fields the server ignored (`warnings`).
 
 See [`docs/dakera_memory_tool.md`](docs/dakera_memory_tool.md) for the full action reference.
 
-## Memory store
+### `DakeraMemoryStore`
 
-`DakeraMemoryStore` is a Strands [`MemoryStore`](https://strandsagents.com/) — a
-`MemoryManager` extension point (Strands ≥ 1.45). Where the `dakera_memory` tool is
-called explicitly by the model, a store plugs into the **agent loop** directly: the
-manager searches it to recall context (injected into the prompt automatically) and,
-when writable, writes new memories — either directly or via periodic **extraction**
-from the conversation. Both share one Dakera server and agent namespace.
+`DakeraMemoryStore` is a Strands `MemoryStore`, the `MemoryManager` extension point
+(Strands 1.45+). Where the `dakera_memory` tool is called explicitly by the model, a store
+plugs into the **agent loop**: the manager searches it before each model call and injects
+the relevant memories into the prompt, gives the model a `search_memory` tool, and, when the
+store is writable, stores new facts it **extracts** from the conversation.
 
 ```python
 from strands import Agent
-from strands.memory import MemoryManager
+from strands.memory import ExtractionConfig, InvocationTrigger, MemoryManager
 from strands_dakera import DakeraMemoryStore
 
-# Recall + write, distilling facts from the conversation every few turns.
-store = DakeraMemoryStore(agent_id="alex", writable=True, extraction=True)
-agent = Agent(memory_manager=MemoryManager(stores=[store]))
+# Recall + write: after every invocation, the agent's model distills facts from the
+# conversation and the store writes them to Dakera.
+store = DakeraMemoryStore(
+    agent_id="alex",
+    extraction=ExtractionConfig(trigger=InvocationTrigger()),
+)
 
-# The agent now recalls from and writes to Dakera without any explicit tool call.
+agent = Agent(memory_manager=MemoryManager(stores=[store]))
 agent("Remember that I prefer dark-mode dashboards.")
-agent("How do I like my dashboards?")  # recalls the stored preference
+
+# A later conversation (a new agent, process or day) recalls it automatically.
+agent = Agent(memory_manager=MemoryManager(stores=[store]))
+agent("How do I like my dashboards?")
 ```
 
-`DakeraMemoryStore` implements `search` (decay-weighted recall) and `add` (a client-side
-write sink), so enabling `extraction` uses the manager's client-side `ModelExtractor` to
-distill facts before storing them.
+`extraction=True` uses the Strands defaults (extraction every 5 invocations). Without
+`extraction`, the store is recall-only unless you write to it yourself (`await
+store.add(...)`) or enable the manager's add tool (`MemoryManager(stores=[store],
+add_tool_config=True)`). `DakeraMemoryStore` implements `search` (decay-weighted recall) and
+`add` (a client-side write sink), so extraction uses the manager's client-side
+`ModelExtractor`. Each recalled `MemoryEntry` carries the memory's `id`, `score`,
+`importance`, `memory_type`, `created_at` and stored metadata in `metadata`.
 
 | Argument | Default | Description |
 |---|---|---|
 | `agent_id` | _(required)_ | Dakera agent namespace that owns the memories |
 | `name` | `"dakera"` | Store identifier, used to target it from memory tools |
+| `description` | `"Persistent, decay-weighted long-term memory backed by Dakera."` | Shown in the memory tools' descriptions |
 | `writable` | `True` | Whether the manager may write to the store |
 | `extraction` | `None` | Automatic extraction (`bool` or `ExtractionConfig`) |
-| `max_search_results` | `None` | Default result cap per search (falls back to 5) |
+| `max_search_results` | `None` | Result cap per search (unset: the manager's default, 3) |
 | `importance` | `None` | Default importance (0.0–1.0) applied to writes |
 | `memory_type` | `"episodic"` | Default Dakera memory type for writes |
 | `base_url` / `api_key` | env | Override `DAKERA_BASE_URL` / `DAKERA_API_KEY` |
+
+The tool and the store share one server and agent namespace: memories stored with the
+tool under `agent_id="alex"` are recalled by `DakeraMemoryStore(agent_id="alex")`.
+
+### Example
+
+[`python/examples/quickstart.py`](python/examples/quickstart.py) runs the tool and the store
+against a local server without model credentials:
+
+```bash
+cd python
+BYPASS_TOOL_CONSENT=true python examples/quickstart.py
+```
 
 ## Development
 
@@ -130,9 +189,10 @@ The package lives under [`python/`](python/) (monorepo-style layout matching the
 ```bash
 cd python
 pip install hatch
-hatch run test        # pytest (no live server required — mocked client)
+hatch run test        # pytest (no live server required: mocked client)
 hatch run prepare     # format + lint + typecheck + test
-DAKERA_TEST_URL=http://localhost:3000 hatch run test tests/test_integration.py  # live tests against a real server (e.g. ghcr.io/dakera-ai/dakera:0.12.3)
+# Live tests against a real server (e.g. ghcr.io/dakera-ai/dakera:0.12.3):
+DAKERA_TEST_URL=http://localhost:3000 DAKERA_API_KEY=dk-mykey hatch run test tests/test_integration.py
 ```
 
 ## Roadmap

@@ -8,9 +8,11 @@ from unittest.mock import MagicMock, create_autospec, patch
 
 import pytest
 from dakera import DakeraClient, RecalledMemory, RecallResponse
-from strands.types.tools import ToolUse
+from strands import Agent
+from strands.models.model import Model
+from strands.types.tools import AgentTool, ToolUse
 
-from strands_dakera.memory import DakeraServiceClient, dakera_memory, format_store_response
+from strands_dakera.memory import TOOL_SPEC, DakeraServiceClient, dakera_memory, format_store_response
 
 
 @pytest.fixture
@@ -432,3 +434,49 @@ def test_store_response_reports_truncation_and_warnings():
     text = str(panel.renderable)
     assert "first 512 of 900 tokens" in text
     assert "unknown field 'when' ignored" in text
+
+
+# ---------------------------------------------------------------------------
+# Registration with a Strands Agent
+# ---------------------------------------------------------------------------
+
+
+class _NoCallModel(Model):
+    """A model that must not be called: the tests only use direct tool calls."""
+
+    def update_config(self, **model_config):
+        pass
+
+    def get_config(self):
+        return {}
+
+    async def structured_output(self, *args, **kwargs):
+        raise AssertionError("model called")
+        yield  # pragma: no cover
+
+    async def stream(self, *args, **kwargs):
+        raise AssertionError("model called")
+        yield  # pragma: no cover
+
+
+def test_dakera_memory_is_an_agent_tool():
+    """The exported tool is a Strands AgentTool carrying TOOL_SPEC (a plain function is not registered)."""
+    assert isinstance(dakera_memory, AgentTool)
+    assert dakera_memory.tool_name == "dakera_memory"
+    assert dakera_memory.tool_spec == TOOL_SPEC
+
+
+@patch.dict(os.environ, {"BYPASS_TOOL_CONSENT": "true"})
+def test_agent_registers_and_calls_the_tool():
+    """Agent(tools=[dakera_memory]) registers the tool and agent.tool.dakera_memory(...) runs it."""
+    agent = Agent(model=_NoCallModel(), tools=[dakera_memory], callback_handler=None)
+    assert agent.tool_names == ["dakera_memory"]
+
+    with patch("strands_dakera.memory.DakeraServiceClient") as MockClient:
+        instance = MockClient.return_value
+        instance.search_memories.return_value = [{"id": "mem-1", "content": "dark mode", "score": 0.9}]
+        result = agent.tool.dakera_memory(action="retrieve", agent_id="alex", query="ui preferences", top_k=3)
+
+    assert result["status"] == "success"
+    assert json.loads(result["content"][0]["text"])[0]["id"] == "mem-1"
+    instance.search_memories.assert_called_once_with(agent_id="alex", query="ui preferences", top_k=3)

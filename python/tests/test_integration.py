@@ -99,3 +99,29 @@ def test_store_event_time_and_update_importance(client, agent_id):
 
     client.update_memory(agent_id, memory_id, importance=0.95)
     assert client.get_memory(agent_id, memory_id)["importance"] == pytest.approx(0.95)
+
+
+def test_tool_through_agent(agent_id, monkeypatch):
+    """The documented usage: Agent(tools=[dakera_memory]) and agent.tool.dakera_memory(...)."""
+    import json
+
+    from strands import Agent
+
+    from strands_dakera import dakera_memory
+
+    monkeypatch.setenv("DAKERA_BASE_URL", TEST_URL)
+    monkeypatch.setenv("BYPASS_TOOL_CONSENT", "true")
+    agent = Agent(tools=[dakera_memory], callback_handler=None)
+
+    stored = agent.tool.dakera_memory(
+        action="store", agent_id=agent_id, content="Alex prefers dark-mode dashboards", importance=0.8
+    )
+    assert stored["status"] == "success", stored
+    memory_id = json.loads(stored["content"][0]["text"])["id"]
+
+    got = agent.tool.dakera_memory(action="get", agent_id=agent_id, memory_id=memory_id)
+    assert got["status"] == "success", got
+    assert json.loads(got["content"][0]["text"])["content"] == "Alex prefers dark-mode dashboards"
+
+    deleted = agent.tool.dakera_memory(action="delete", agent_id=agent_id, memory_id=memory_id)
+    assert deleted["status"] == "success", deleted

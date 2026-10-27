@@ -18,6 +18,12 @@ Dakera server **v0.12.3** support. Compatible with Dakera server v0.12.0 – v0.
 
 ### Fixed
 
+- `Agent(tools=[dakera_memory])` did not register the tool: `dakera_memory` was a plain
+  function, which Strands rejects ("unrecognized tool specification"), so the agent had no
+  `dakera_memory` tool and `agent.tool.dakera_memory(...)` raised `AttributeError` (since
+  0.1.0). `dakera_memory` is now a Strands `AgentTool` (`DakeraMemoryTool`, a
+  `PythonAgentTool` carrying `TOOL_SPEC`); calling it directly with a `ToolUse`
+  (`dakera_memory(tool=...)`) still works.
 - `retrieve` (tool) and `DakeraMemoryStore.search()` returned more than `top_k` /
   `max_search_results` memories on a v0.12.3 server: it appends session-neighbourhood context
   after the ranked results by default (e.g. 3 results for `top_k=2`). Recall now asks for
@@ -38,9 +44,33 @@ Dakera server **v0.12.3** support. Compatible with Dakera server v0.12.0 – v0.
   fail), and live tests for v0.12.3: recall of an agent that stored nothing returns no
   memories (older servers answered `404`), at most `top_k` results with session
   neighbourhood, `event_time` and importance updates.
-- CI: an integration job runs `tests/test_integration.py` against
+- `examples/quickstart.py`: the tool and `DakeraMemoryStore` (through a `MemoryManager`)
+  against a local server, without model credentials.
+- CI: an integration job runs `tests/test_integration.py` and the example against
   `ghcr.io/dakera-ai/dakera:0.12.3`, polling `/health` from the runner (the image ships no
   `curl` for an in-container health check).
+
+### Documentation
+
+- READMEs and `docs/dakera_memory_tool.md` rewritten against the current API; every Python
+  snippet was run against a v0.12.3 server. Corrections: the server quick start (a single
+  `docker run`, or `dakera-deploy/docker` with a `.env`: the old `git clone dakera-deploy &&
+  docker compose up -d` had no compose file at that path); the tool prints preview panels
+  before mutative actions (it does not prompt; `BYPASS_TOOL_CONSENT=true` suppresses them);
+  `extraction=True` extracts every 5 invocations (the `DakeraMemoryStore` example now
+  extracts after every invocation, so its second turn really recalls the first);
+  `max_search_results` unset means the manager's default of 3; the integration-test
+  instructions named a test file that does not exist. New: result shapes, `event_time`,
+  update `importance`, `BYPASS_TOOL_CONSENT` in the configuration table.
+- `DakeraMemoryStore.add()` no longer claims the server always de-duplicates: autopilot
+  dedup is off by default from server v0.12.3 (`DAKERA_AUTOPILOT_DEDUP_MODE=merge`).
+
+### Maintenance
+
+- Removed committed local agent-tooling state (`agentdb.rvf`, `agentdb.rvf.lock` and
+  `.claude-flow/` at the repository root and in `python/`) and ignored it.
+- CI: the lint job checks formatting (`ruff format --check`; it reformatted and passed
+  before) including `examples/`; `actions/checkout` and `actions/setup-python` v7.
 
 ## [0.3.0] - 2026-10-01
 

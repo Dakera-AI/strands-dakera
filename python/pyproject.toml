@@ -74,14 +74,14 @@ dependencies = [
 
 [tool.hatch.envs.default.scripts]
 test = "pytest {args}"
-lint = "ruff check src tests"
-format = "ruff format src tests"
+lint = "ruff check src tests examples"
+format = "ruff format src tests examples"
 typecheck = "mypy src"
 prepare = ["format", "lint", "typecheck", "test"]
 
 [tool.ruff]
 line-length = 120
-include = ["src/**/*.py", "tests/**/*.py"]
+include = ["src/**/*.py", "tests/**/*.py", "examples/**/*.py"]
 
 [tool.ruff.lint]
 select = [

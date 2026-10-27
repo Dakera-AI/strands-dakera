@@ -11,3 +11,8 @@ dist/
 venv/
 .env
 _version.py
+
+# Local agent-tooling state (claude-flow / agentdb), not part of the package
+.claude-flow/
+agentdb.rvf
+agentdb.rvf.lock
