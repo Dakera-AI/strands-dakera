@@ -12,21 +12,22 @@ listens on port 3000 by default. See https://github.com/dakera-ai/dakera-deploy.
 Key Features:
 ------------
 1. Memory Management:
-   - store: Add a new memory for an agent, with importance and metadata
-   - retrieve: Semantic (decay-weighted) recall across an agent's memories
+   - store: Add a new memory for an agent, with importance, type, metadata and
+     (server v0.12.3+) the time the remembered event happened
+   - retrieve: Semantic (decay-weighted) recall: at most ``top_k`` ranked memories
    - get: Fetch a specific memory by its ID
-   - update: Update the content/metadata of an existing memory
+   - update: Update the content, metadata, memory type or importance of a memory
    - delete: Remove a memory by its ID
 
-2. Safety Features:
-   - User confirmation for mutative operations (store, update, delete)
-   - Content previews before storage
-   - Warning messages before deletion
-   - BYPASS_TOOL_CONSENT mode for bypassing confirmations in tests
+2. Visibility:
+   - A preview panel before each mutative operation (store, update, delete)
+   - Warnings when stored content is longer than the embedding model reads, or
+     when the server ignored request fields
+   - BYPASS_TOOL_CONSENT=true suppresses the previews (tests, automation)
 
 3. Advanced Capabilities:
    - Decay-weighted, access-aware ranking (recall favors important, fresh memories)
-   - Importance scoring (0.0-1.0) and typed memories (episodic/semantic/procedural)
+   - Importance scoring (0.0-1.0) and typed memories (episodic/semantic/procedural/working)
    - Structured metadata storage
    - Rich output formatting
 
@@ -49,6 +50,7 @@ agent.tool.dakera_memory(
     content="Important information to remember",
     importance=0.8,
     metadata={"category": "meeting_notes"},
+    event_time="2026-03-01T09:00:00Z",  # when it happened (optional, server v0.12.3+)
 )
 
 # Retrieve memories with decay-weighted semantic search
@@ -70,12 +72,13 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-from strands.types.tools import ToolResult, ToolResultContent, ToolUse
+from strands.tools import PythonAgentTool
+from strands.types.tools import ToolResult, ToolResultContent, ToolSpec, ToolUse
 
 logger = logging.getLogger(__name__)
 console = Console()
 
-TOOL_SPEC = {
+TOOL_SPEC: ToolSpec = {
     "name": "dakera_memory",
     "description": (
         "Persistent, decay-weighted memory for agents, backed by a self-hosted Dakera server.\n\n"
@@ -83,7 +86,8 @@ TOOL_SPEC = {
         "- store: Store a new memory (requires agent_id and content)\n"
         "- retrieve: Decay-weighted semantic search (requires agent_id and query)\n"
         "- get: Get a memory by ID (requires agent_id and memory_id)\n"
-        "- update: Update a memory's content/metadata (requires agent_id and memory_id)\n"
+        "- update: Update a memory's content, metadata, memory_type or importance "
+        "(requires agent_id and memory_id)\n"
         "- delete: Delete a memory by ID (requires agent_id and memory_id)\n\n"
         "Configure the server via DAKERA_BASE_URL (default http://localhost:3000) and DAKERA_API_KEY."
     ),
@@ -118,7 +122,7 @@ TOOL_SPEC = {
                 },
                 "importance": {
                     "type": "number",
-                    "description": "Importance score 0.0-1.0 for store action",
+                    "description": "Importance score 0.0-1.0 for store/update",
                 },
                 "memory_type": {
                     "type": "string",
@@ -128,6 +132,14 @@ TOOL_SPEC = {
                 "metadata": {
                     "type": "object",
                     "description": "Optional metadata to store with the memory",
+                },
+                "event_time": {
+                    "type": "string",
+                    "description": (
+                        "For store: when the remembered event happened, if not now, as an RFC 3339 "
+                        "timestamp with offset (e.g. 2026-03-01T09:00:00Z). Recency and time filters "
+                        "use it instead of the time of storage."
+                    ),
                 },
             },
             "required": ["action", "agent_id"],
@@ -166,14 +178,24 @@ class DakeraServiceClient:
         importance: float | None = None,
         memory_type: str = "episodic",
         metadata: dict[str, Any] | None = None,
+        event_time: int | float | str | None = None,
     ) -> dict[str, Any]:
-        """Store a memory for an agent."""
+        """Store a memory for an agent.
+
+        ``event_time`` (Unix seconds or an RFC 3339 string) is when the remembered
+        event happened, for history written after the fact; a Dakera server
+        v0.12.3+ uses it for recency and time filters (older servers ignore it).
+        The result carries ``truncated`` / ``embedded_tokens`` when the content is
+        longer than the embedding model reads, and ``warnings`` naming request
+        fields the server ignored (server v0.12.3+).
+        """
         result: dict[str, Any] = self.client.store_memory(
             agent_id=agent_id,
             content=content,
             memory_type=memory_type,
             importance=importance,
             metadata=metadata,
+            event_time=event_time,
         )
         return result
 
@@ -189,24 +211,52 @@ class DakeraServiceClient:
         content: str | None = None,
         metadata: dict[str, Any] | None = None,
         memory_type: str | None = None,
+        importance: float | None = None,
     ) -> dict[str, Any]:
-        """Update an existing memory."""
+        """Update an existing memory (only the fields given are changed)."""
         result: dict[str, Any] = self.client.update_memory(
             agent_id=agent_id,
             memory_id=memory_id,
             content=content,
             metadata=metadata,
             memory_type=memory_type,
+            importance=importance,
         )
         return result
 
     def search_memories(self, agent_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]]:
-        """Decay-weighted semantic recall for an agent."""
-        # `recall` returns a RecallResponse (with `.memories`); we defensively also
-        # accept a raw iterable, so treat the result as untyped for duck-typing.
-        response: Any = self.client.recall(agent_id=agent_id, query=query, top_k=top_k)
-        memories = getattr(response, "memories", response)
-        return [_memory_to_dict(m) for m in memories]
+        """Decay-weighted semantic recall for an agent: at most ``top_k`` ranked memories.
+
+        A Dakera server v0.12.3+ appends session-neighbourhood context after the
+        ranked results by default, so ``memories`` can hold more than ``top_k``
+        items. The recall asks for that context separately and returns only the
+        ranked results; an older server ignores the request and appends the
+        context unmarked, so the list is also cut at ``top_k``.
+
+        An agent that has stored nothing recalls nothing: a server before v0.12.3
+        answers such a recall with ``404 NAMESPACE_NOT_FOUND`` for some queries (the
+        agent's namespace is created by its first stored memory), which is returned
+        as an empty list like a v0.12.3 server's answer. Other errors are raised.
+        """
+        from dakera import ErrorCode, NotFoundError
+
+        # `recall` returns a RecallResponse (with `.ranked` / `.memories`); we
+        # defensively also accept a raw iterable, so treat the result as untyped.
+        try:
+            response: Any = self.client.recall(
+                agent_id=agent_id,
+                query=query,
+                top_k=top_k,
+                neighborhood_mode="separate",
+            )
+        except NotFoundError as err:
+            if err.code != ErrorCode.NAMESPACE_NOT_FOUND:
+                raise
+            return []
+        memories = getattr(response, "ranked", None)
+        if memories is None:
+            memories = getattr(response, "memories", response)
+        return [_memory_to_dict(m) for m in list(memories)[:top_k]]
 
     def delete_memory(self, agent_id: str, memory_id: str) -> dict[str, Any]:
         """Delete a memory by ID."""
@@ -236,6 +286,13 @@ def format_store_response(memory: dict[str, Any]) -> Panel:
         f"🔑 Memory ID: {memory.get('id', 'unknown')}",
         f"📊 Importance: {memory.get('importance', 'default')}",
     ]
+    if memory.get("truncated"):
+        content.append(
+            f"⚠️ Only the first {memory.get('embedded_tokens', '?')} of {memory.get('content_tokens', '?')} "
+            "tokens are searchable (content longer than the embedding model reads)"
+        )
+    for warning in memory.get("warnings") or []:
+        content.append(f"⚠️ {warning}")
     text = memory.get("content")
     if text:
         preview = text[:100] + "..." if len(text) > 100 else text
@@ -295,12 +352,12 @@ def format_delete_response(memory_id: str) -> Panel:
     return Panel("\n".join(content), title="[bold green]Memory Deleted", border_style="green")
 
 
-def dakera_memory(tool: ToolUse, **kwargs: Any) -> ToolResult:
+def _dakera_memory(tool: ToolUse, **kwargs: Any) -> ToolResult:
     """Persistent decay-weighted memory management for agents, backed by Dakera.
 
     Args:
         tool: ToolUse object containing the input fields (action, agent_id, content,
-            memory_id, query, top_k, importance, memory_type, metadata).
+            memory_id, query, top_k, importance, memory_type, metadata, event_time).
         **kwargs: Additional keyword arguments.
 
     Returns:
@@ -350,6 +407,7 @@ def dakera_memory(tool: ToolUse, **kwargs: Any) -> ToolResult:
                 importance=tool_input.get("importance"),
                 memory_type=tool_input.get("memory_type", "episodic"),
                 metadata=tool_input.get("metadata"),
+                event_time=tool_input.get("event_time"),
             )
             console.print(format_store_response(memory))
             return ToolResult(
@@ -393,6 +451,7 @@ def dakera_memory(tool: ToolUse, **kwargs: Any) -> ToolResult:
                 content=tool_input.get("content"),
                 metadata=tool_input.get("metadata"),
                 memory_type=tool_input.get("memory_type"),
+                importance=tool_input.get("importance"),
             )
             console.print(format_get_response(memory))
             return ToolResult(
@@ -421,3 +480,23 @@ def dakera_memory(tool: ToolUse, **kwargs: Any) -> ToolResult:
             status="error",
             content=[ToolResultContent(text=f"Error: {str(e)}")],
         )
+
+
+class DakeraMemoryTool(PythonAgentTool):
+    """The ``dakera_memory`` tool: a Strands ``AgentTool`` that is also a plain callable.
+
+    Pass it to an agent (``Agent(tools=[dakera_memory])``) or call it directly with a
+    ``ToolUse`` (``dakera_memory(tool=tool_use)``), which returns the ``ToolResult``.
+    """
+
+    def __init__(self) -> None:
+        """Initialize the tool from :data:`TOOL_SPEC`."""
+        super().__init__(TOOL_SPEC["name"], TOOL_SPEC, _dakera_memory)
+
+    def __call__(self, tool: ToolUse, **kwargs: Any) -> ToolResult:
+        """Run the tool for one ``ToolUse`` (see :func:`_dakera_memory`)."""
+        return _dakera_memory(tool, **kwargs)
+
+
+dakera_memory = DakeraMemoryTool()
+"""The ``dakera_memory`` tool instance: ``Agent(tools=[dakera_memory])``."""

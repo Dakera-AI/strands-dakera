@@ -29,7 +29,7 @@ classifiers = [
 # (MemoryStore / MemoryManager) that DakeraMemoryStore implements.
 dependencies = [
     "strands-agents>=1.45.0",
-    "dakera>=0.13.1",
+    "dakera>=0.14.1",
     "rich>=13.0.0",
 ]
 
@@ -74,14 +74,14 @@ dependencies = [
 
 [tool.hatch.envs.default.scripts]
 test = "pytest {args}"
-lint = "ruff check src tests"
-format = "ruff format src tests"
+lint = "ruff check src tests examples"
+format = "ruff format src tests examples"
 typecheck = "mypy src"
 prepare = ["format", "lint", "typecheck", "test"]
 
 [tool.ruff]
 line-length = 120
-include = ["src/**/*.py", "tests/**/*.py"]
+include = ["src/**/*.py", "tests/**/*.py", "examples/**/*.py"]
 
 [tool.ruff.lint]
 select = [

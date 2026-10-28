@@ -1,9 +1,9 @@
 """
-Live tests against a real Dakera server (v0.12.0 / v0.11.108).
+Live tests against a real Dakera server (v0.12.3; the round trips also pass on v0.12.0).
 
 Skipped unless ``DAKERA_TEST_URL`` is set, e.g.::
 
-    docker run -d -p 3000:3000 -e DAKERA_AUTH_ENABLED=false ghcr.io/dakera-ai/dakera:0.12.0
+    docker run -d -p 3000:3000 -e DAKERA_AUTH_ENABLED=false ghcr.io/dakera-ai/dakera:0.12.3
     DAKERA_TEST_URL=http://localhost:3000 pytest tests/test_integration.py
 
 They exercise every SDK call the tool and the store make, so a removed route or
@@ -68,3 +68,64 @@ async def test_memory_store_add_and_search(client, agent_id):
     entries = await store.search("when is the deployment window")
     assert entries
     assert any("Friday" in e.content for e in entries)
+
+
+def test_search_of_empty_agent_returns_nothing(client, agent_id):
+    """An agent that stored nothing recalls nothing on every v0.12 server.
+
+    "What do I build?" is a query a server before v0.12.3 answers with
+    404 NAMESPACE_NOT_FOUND for such an agent.
+    """
+    assert client.search_memories(agent_id, "What do I build?", top_k=3) == []
+
+
+def test_search_returns_at_most_top_k_with_session_neighbourhood(client, agent_id):
+    """Memories stored in one session get neighbourhood context; it must not push results past top_k."""
+    session = client.client.start_session(agent_id)
+    for i in range(6):
+        client.client.store_memory(agent_id, f"Alex tried tea variety number {i} today", session_id=session["id"])
+
+    results = client.search_memories(agent_id, "which tea did Alex try", top_k=2)
+
+    assert len(results) == 2
+    scores = [r["score"] for r in results]
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_store_event_time_and_update_importance(client, agent_id):
+    """event_time is recorded as _dakera_event_time; update_memory() changes the importance."""
+    stored = client.store_memory(agent_id, "Alex met Sam at the conference", event_time="2026-03-01T09:00:00Z")
+    memory_id = stored.get("memory_id") or stored.get("id")
+    assert memory_id
+
+    got = client.get_memory(agent_id, memory_id)
+    assert got["metadata"]["_dakera_event_time"] == 1772355600
+
+    client.update_memory(agent_id, memory_id, importance=0.95)
+    assert client.get_memory(agent_id, memory_id)["importance"] == pytest.approx(0.95)
+
+
+def test_tool_through_agent(agent_id, monkeypatch):
+    """The documented usage: Agent(tools=[dakera_memory]) and agent.tool.dakera_memory(...)."""
+    import json
+
+    from strands import Agent
+
+    from strands_dakera import dakera_memory
+
+    monkeypatch.setenv("DAKERA_BASE_URL", TEST_URL)
+    monkeypatch.setenv("BYPASS_TOOL_CONSENT", "true")
+    agent = Agent(tools=[dakera_memory], callback_handler=None)
+
+    stored = agent.tool.dakera_memory(
+        action="store", agent_id=agent_id, content="Alex prefers dark-mode dashboards", importance=0.8
+    )
+    assert stored["status"] == "success", stored
+    memory_id = json.loads(stored["content"][0]["text"])["id"]
+
+    got = agent.tool.dakera_memory(action="get", agent_id=agent_id, memory_id=memory_id)
+    assert got["status"] == "success", got
+    assert json.loads(got["content"][0]["text"])["content"] == "Alex prefers dark-mode dashboards"
+
+    deleted = agent.tool.dakera_memory(action="delete", agent_id=agent_id, memory_id=memory_id)
+    assert deleted["status"] == "success", deleted

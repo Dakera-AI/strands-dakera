@@ -4,12 +4,15 @@ Tests for the dakera_memory tool.
 
 import json
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, create_autospec, patch
 
 import pytest
-from strands.types.tools import ToolUse
+from dakera import DakeraClient, ErrorCode, NotFoundError, RecalledMemory, RecallResponse
+from strands import Agent
+from strands.models.model import Model
+from strands.types.tools import AgentTool, ToolUse
 
-from strands_dakera.memory import DakeraServiceClient, dakera_memory
+from strands_dakera.memory import TOOL_SPEC, DakeraServiceClient, dakera_memory, format_store_response
 
 
 @pytest.fixture
@@ -92,6 +95,7 @@ def test_store_memory():
         importance=0.8,
         memory_type="episodic",
         metadata={"category": "notes"},
+        event_time=None,
     )
 
 
@@ -222,6 +226,14 @@ def test_update_memory():
     assert result["status"] == "success"
     body = json.loads(result["content"][0]["text"])
     assert body["content"] == "updated content"
+    instance.update_memory.assert_called_once_with(
+        agent_id="alex",
+        memory_id="mem-abc",
+        content="updated content",
+        metadata={"tag": "v2"},
+        memory_type=None,
+        importance=None,
+    )
 
 
 def test_update_missing_memory_id():
@@ -292,3 +304,194 @@ def test_invalid_action():
         result = dakera_memory(tool=tool)
     assert result["status"] == "error"
     assert "Invalid action" in result["content"][0]["text"]
+
+
+# ---------------------------------------------------------------------------
+# Server v0.12.3 / dakera 0.14.1
+# ---------------------------------------------------------------------------
+
+
+def make_service_client() -> tuple[DakeraServiceClient, MagicMock]:
+    """A DakeraServiceClient over a spec'd SDK mock: calls that do not match the SDK signature fail."""
+    sdk = create_autospec(DakeraClient, instance=True)
+    client = DakeraServiceClient.__new__(DakeraServiceClient)
+    client.client = sdk
+    return client, sdk
+
+
+def recalled(memory_id: str, score: float, retrieval: str | None = None) -> RecalledMemory:
+    return RecalledMemory(
+        id=memory_id,
+        content=f"content of {memory_id}",
+        memory_type="episodic",
+        importance=0.5,
+        score=score,
+        rank_score=score,
+        retrieval=retrieval,
+    )
+
+
+def test_search_asks_for_separate_neighborhood_and_returns_ranked_only():
+    """search_memories() requests neighborhood_mode="separate" and drops inline context items."""
+    client, sdk = make_service_client()
+    sdk.recall.return_value = RecallResponse(
+        memories=[recalled("mem-1", 0.9), recalled("mem-2", 0.8), recalled("mem-ctx", 0.0, "neighborhood")]
+    )
+
+    results = client.search_memories("alex", "tea", top_k=2)
+
+    sdk.recall.assert_called_once_with(agent_id="alex", query="tea", top_k=2, neighborhood_mode="separate")
+    assert [r["id"] for r in results] == ["mem-1", "mem-2"]
+    assert results[0]["score"] == 0.9
+
+
+def test_search_cuts_unmarked_inline_context_from_older_servers():
+    """A server up to v0.12.2 ignores neighborhood_mode and appends unmarked context: cut at top_k."""
+    client, sdk = make_service_client()
+    sdk.recall.return_value = RecallResponse(memories=[recalled("mem-1", 0.9), recalled("mem-2", 0.0)])
+
+    results = client.search_memories("alex", "tea", top_k=1)
+
+    assert [r["id"] for r in results] == ["mem-1"]
+
+
+def test_search_empty_agent_returns_no_memories():
+    """Server v0.12.3 answers a recall of an agent that stored nothing with no memories."""
+    client, sdk = make_service_client()
+    sdk.recall.return_value = RecallResponse(memories=[])
+
+    assert client.search_memories("new-agent", "anything") == []
+
+
+def test_service_client_store_forwards_event_time():
+    client, sdk = make_service_client()
+    sdk.store_memory.return_value = {"id": "mem-1"}
+
+    client.store_memory("alex", "met Sam", importance=0.7, event_time="2026-03-01T09:00:00Z")
+
+    sdk.store_memory.assert_called_once_with(
+        agent_id="alex",
+        content="met Sam",
+        memory_type="episodic",
+        importance=0.7,
+        metadata=None,
+        event_time="2026-03-01T09:00:00Z",
+    )
+
+
+def test_service_client_update_forwards_importance():
+    client, sdk = make_service_client()
+    sdk.update_memory.return_value = {"id": "mem-1"}
+
+    client.update_memory("alex", "mem-1", importance=0.9)
+
+    sdk.update_memory.assert_called_once_with(
+        agent_id="alex",
+        memory_id="mem-1",
+        content=None,
+        metadata=None,
+        memory_type=None,
+        importance=0.9,
+    )
+
+
+@patch.dict(os.environ, {"BYPASS_TOOL_CONSENT": "true"})
+def test_store_action_passes_event_time():
+    with patch("strands_dakera.memory.DakeraServiceClient") as MockClient:
+        instance = MockClient.return_value
+        instance.store_memory.return_value = {"id": "mem-1"}
+        tool = make_tool(
+            {"action": "store", "agent_id": "alex", "content": "met Sam", "event_time": "2026-03-01T09:00:00Z"}
+        )
+        result = dakera_memory(tool=tool)
+
+    assert result["status"] == "success"
+    assert instance.store_memory.call_args.kwargs["event_time"] == "2026-03-01T09:00:00Z"
+
+
+@patch.dict(os.environ, {"BYPASS_TOOL_CONSENT": "true"})
+def test_update_action_passes_importance():
+    with patch("strands_dakera.memory.DakeraServiceClient") as MockClient:
+        instance = MockClient.return_value
+        instance.update_memory.return_value = {"id": "mem-1"}
+        tool = make_tool({"action": "update", "agent_id": "alex", "memory_id": "mem-1", "importance": 0.9})
+        result = dakera_memory(tool=tool)
+
+    assert result["status"] == "success"
+    assert instance.update_memory.call_args.kwargs["importance"] == 0.9
+
+
+def test_store_response_reports_truncation_and_warnings():
+    panel = format_store_response(
+        {
+            "id": "mem-1",
+            "truncated": True,
+            "content_tokens": 900,
+            "embedded_tokens": 512,
+            "warnings": ["unknown field 'when' ignored"],
+        }
+    )
+    text = str(panel.renderable)
+    assert "first 512 of 900 tokens" in text
+    assert "unknown field 'when' ignored" in text
+
+
+# ---------------------------------------------------------------------------
+# Registration with a Strands Agent
+# ---------------------------------------------------------------------------
+
+
+class _NoCallModel(Model):
+    """A model that must not be called: the tests only use direct tool calls."""
+
+    def update_config(self, **model_config):
+        pass
+
+    def get_config(self):
+        return {}
+
+    async def structured_output(self, *args, **kwargs):
+        raise AssertionError("model called")
+        yield  # pragma: no cover
+
+    async def stream(self, *args, **kwargs):
+        raise AssertionError("model called")
+        yield  # pragma: no cover
+
+
+def test_dakera_memory_is_an_agent_tool():
+    """The exported tool is a Strands AgentTool carrying TOOL_SPEC (a plain function is not registered)."""
+    assert isinstance(dakera_memory, AgentTool)
+    assert dakera_memory.tool_name == "dakera_memory"
+    assert dakera_memory.tool_spec == TOOL_SPEC
+
+
+@patch.dict(os.environ, {"BYPASS_TOOL_CONSENT": "true"})
+def test_agent_registers_and_calls_the_tool():
+    """Agent(tools=[dakera_memory]) registers the tool and agent.tool.dakera_memory(...) runs it."""
+    agent = Agent(model=_NoCallModel(), tools=[dakera_memory], callback_handler=None)
+    assert agent.tool_names == ["dakera_memory"]
+
+    with patch("strands_dakera.memory.DakeraServiceClient") as MockClient:
+        instance = MockClient.return_value
+        instance.search_memories.return_value = [{"id": "mem-1", "content": "dark mode", "score": 0.9}]
+        result = agent.tool.dakera_memory(action="retrieve", agent_id="alex", query="ui preferences", top_k=3)
+
+    assert result["status"] == "success"
+    assert json.loads(result["content"][0]["text"])[0]["id"] == "mem-1"
+    instance.search_memories.assert_called_once_with(agent_id="alex", query="ui preferences", top_k=3)
+
+
+def test_recall_of_agent_without_memories_on_an_older_server_is_empty():
+    # A server before v0.12.3 answers 404 NAMESPACE_NOT_FOUND for an agent that has
+    # stored nothing yet (for some queries); the tool and the store get no memories.
+    client, sdk = make_service_client()
+    sdk.recall.side_effect = NotFoundError("Namespace not found", status_code=404, code=ErrorCode.NAMESPACE_NOT_FOUND)
+    assert client.search_memories("agent-1", "What do I build?", top_k=3) == []
+
+
+def test_recall_raises_other_not_found_errors():
+    client, sdk = make_service_client()
+    sdk.recall.side_effect = NotFoundError("gone", status_code=404)
+    with pytest.raises(NotFoundError):
+        client.search_memories("agent-1", "What do I build?", top_k=3)
